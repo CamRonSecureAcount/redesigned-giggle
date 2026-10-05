@@ -1,0 +1,137 @@
+
+name: Build Offline HTML IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate iOS project
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f web/index.html
+          mkdir -p App/Resources
+          cp -R web/. App/Resources/
+
+          cat > App/main.swift <<'SWIFT'
+          import UIKit
+          import WebKit
+
+          final class ViewController: UIViewController {
+              private var webView: WKWebView!
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  webView = WKWebView(frame: view.bounds)
+                  webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                  view.addSubview(webView)
+
+                  guard let url = Bundle.main.url(
+                      forResource: "index",
+                      withExtension: "html",
+                      subdirectory: "Resources"
+                  ) else { return }
+
+                  webView.loadFileURL(
+                      url,
+                      allowingReadAccessTo: url.deletingLastPathComponent()
+                  )
+              }
+          }
+
+          @main final class AppDelegate: UIResponder, UIApplicationDelegate {
+              var window: UIWindow?
+
+              func application(
+                  _ application: UIApplication,
+                  didFinishLaunchingWithOptions launchOptions:
+                  [UIApplication.LaunchOptionsKey: Any]?
+              ) -> Bool {
+                  window = UIWindow(frame: UIScreen.main.bounds)
+                  window?.rootViewController = ViewController()
+                  window?.makeKeyAndVisible()
+                  return true
+              }
+          }
+          SWIFT
+
+          cat > App/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>OfflineHTML</string>
+            <key>CFBundleIdentifier</key><string>com.nori.offlinehtml</string>
+            <key>CFBundleName</key><string>OfflineHTML</string>
+            <key>CFBundleDisplayName</key><string>Offline HTML</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>1.0</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>LSRequiresIPhoneOS</key><true/>
+            <key>UILaunchScreen</key><dict/>
+            <key>UISupportedInterfaceOrientations</key>
+            <array>
+              <string>UIInterfaceOrientationPortrait</string>
+              <string>UIInterfaceOrientationLandscapeLeft</string>
+              <string>UIInterfaceOrientationLandscapeRight</string>
+            </array>
+          </dict>
+          </plist>
+          PLIST
+
+          cat > project.yml <<'YAML'
+          name: OfflineHTML
+          options:
+            bundleIdPrefix: com.nori
+            deploymentTarget:
+              iOS: '15.0'
+          targets:
+            OfflineHTML:
+              type: application
+              platform: iOS
+              sources:
+                - path: App/main.swift
+                - path: App/Resources
+                  type: folder
+                  buildPhase: resources
+              settings:
+                base:
+                  INFOPLIST_FILE: App/Info.plist
+                  PRODUCT_BUNDLE_IDENTIFIER: com.nori.offlinehtml
+                  CODE_SIGNING_ALLOWED: NO
+                  SWIFT_VERSION: '5.0'
+                  TARGETED_DEVICE_FAMILY: '1,2'
+          YAML
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build app
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          xcodebuild \
+            -project OfflineHTML.xcodeproj \
+            -scheme OfflineHTML \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO build
+
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/OfflineHTML.app Payload/
+          zip -qry OfflineHTML-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OfflineHTML-unsigned-IPA
+          path: OfflineHTML-unsigned.ipa
